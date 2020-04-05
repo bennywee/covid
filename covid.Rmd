@@ -85,7 +85,7 @@ get_ecdc_csv <- function(url = "https://opendata.ecdc.europa.eu/covid19/casedist
   
   tf <- tempfile(fileext = ext)
   curl::curl_download(target, tf)
-  fs::file_copy(tf, destination)
+  fs::file_copy(tf, destination, overwrite = TRUE)
   
   janitor::clean_names(readr::read_csv(tf))
 }                          
@@ -134,7 +134,8 @@ top_n_states <- function(data, n = 5, measure = c("positive", "death")) {
 ## figuring out that this operation is called a coalescing join  
 ## https://alistaire.rbind.io/blog/coalescing-joins/
 coalesce_join <- function(x, y, 
-                          by = NULL, suffix = c(".x", ".y"), 
+                          by = NULL, 
+                          suffix = c(".x", ".y"), 
                           join = dplyr::full_join, ...) {
     joined <- join(x, y, by = by, suffix = suffix, ...)
     # names of desired output
@@ -232,8 +233,6 @@ oceania <- c("ASM", "AUS", "NZL", "COK", "FJI", "PYF", "GUM", "KIR", "MNP", "MHL
 
 covid_raw <- get_ecdc_csv()
 
-covid_raw
-
 ## on 3/27/20 they changed the contents of the file too, including the date format
 covid <- covid_raw %>%
   mutate(date = lubridate::dmy(date_rep),
@@ -272,8 +271,10 @@ cname_xwalk
 #   select(-iso3.x, -iso3.y, cname.x, cname.y)
 
 ## But nicer to use the function from Edward Visel
-covid <- coalesce_join(covid, cname_xwalk, 
-                       by = "geo_id", join = dplyr::left_join)
+covid <- coalesce_join(covid, 
+                       cname_xwalk, 
+                       by = "geo_id", 
+                       join = dplyr::left_join)
 
 
 ## Take a look again
@@ -405,6 +406,11 @@ cov_curve %>%
 
 ```
 
+```{r}
+top_50 %>% arrange(desc(cu_cases))
+
+```
+
 ```{r, layout="l-body-outset", fig.width=10, fig.height=8}
 
 cov_case_curve <- covid %>%
@@ -426,29 +432,86 @@ cov_case_curve <- covid %>%
                         `Korea, Republic of` = "South Korea", 
                         `United Kingdom` = "UK"))
 
+top_50 <- cov_case_curve %>%
+  group_by(cname) %>%
+  filter(cu_cases == max(cu_cases)) %>%
+  ungroup() %>%
+  top_n(50, cu_cases) %>%
+  select(iso3, cname, cu_cases) %>%
+  mutate(days_elapsed = 1, 
+             cu_cases = max(cov_case_curve$cu_cases) - 1e4,
+          cname = recode(cname, `United States` = "USA",
+                        `Iran, Islamic Republic of` = "Iran", 
+                        `Korea, Republic of` = "South Korea", 
+                        `United Kingdom` = "UK")) 
 
-cov_case_curve %>%
-  mutate(end_label = case_when(iso3 %in% focus_cn ~ end_label,
-                               TRUE ~ NA_character_), 
-         cgroup = case_when(iso3 %in% focus_cn ~ iso3, 
-                            TRUE ~ "ZZOTHER")) %>%
-  ggplot(mapping = aes(x = days_elapsed, y = cu_cases, 
-         color = cgroup, label = end_label, 
-         group = cname)) + 
-  geom_line(size = 0.8) + 
-  geom_text_repel(nudge_x = 0.5,
-                  nudge_y = -0.1, 
-                  segment.color = NA) + 
-  guides(color = FALSE) + 
-  scale_color_manual(values = cgroup_cols) +
-  scale_y_continuous(labels = scales::comma_format(accuracy = 1), 
-                     breaks = 2^seq(4, 16, 1),
-                     trans = "log2") + 
+cov_case_curve_bg <- cov_case_curve %>% 
+  select(-cname) %>%
+  filter(iso3 %in% top_50$iso3) 
+
+cov_case_curve_endpoints <- cov_case_curve %>% 
+  filter(iso3 %in% top_50$iso3) %>%
+  mutate(cname = recode(cname, `United States` = "USA",
+                        `Iran, Islamic Republic of` = "Iran", 
+                        `Korea, Republic of` = "South Korea", 
+                        `United Kingdom` = "UK")) %>%
+  group_by(iso3) %>%
+  filter(cu_cases == max(cu_cases)) %>%
+  select(cname, iso3, days_elapsed, cu_cases) %>%
+  ungroup()
+
+cov_case_sm <- cov_case_curve  %>%
+  filter(iso3 %in% top_50$iso3) %>%
+  mutate(cname = recode(cname, `United States` = "USA",
+                        `Iran, Islamic Republic of` = "Iran", 
+                        `Korea, Republic of` = "South Korea", 
+                        `United Kingdom` = "UK")) %>%
+  ggplot(mapping = aes(x = days_elapsed, y = cu_cases)) + 
+  # The line traces for every country, in every panel
+  geom_line(data = cov_case_curve_bg, 
+            aes(group = iso3),
+            size = 0.15, color = "gray80") + 
+  # The line trace in red, for the country in any given panel
+  geom_line(color = "firebrick",
+            lineend = "round") + 
+  # The point at the end. Bonus trick: some points can have fills!
+  geom_point(data = cov_case_curve_endpoints, 
+             size = 1.1, 
+             shape = 21, 
+             color = "firebrick",
+             fill = "firebrick2"
+             ) + 
+  # The country label inside the panel, in lieu of the strip label
+  geom_text(data = top_50, 
+             mapping = aes(label = cname), 
+             vjust = "inward", 
+             hjust = "inward",
+             fontface = "bold", 
+             color = "firebrick", 
+             size = 2.1) + 
+  # Log transform and friendly labels
+  scale_y_log10(labels = scales::label_number_si()) + 
+  # Facet by country, order from high to low
+  facet_wrap(~ reorder(cname, -cu_cases), ncol = 5) + 
   labs(x = "Days Since 100th Confirmed Case", 
-       y = "Cumulative Number of Reported Cases (log2 scale)", 
-       title = "Cumulative Reported Cases of COVID-19, Selected Countries", 
-       subtitle = paste("ECDC data as of", format(max(cov_curve$date), "%A, %B %e, %Y")), 
-       caption = "Kieran Healy @kjhealy / Data: https://www.ecdc.europa.eu/") 
+       y = "Cumulative Number of Cases (log10 scale)", 
+       title = "Cumulative Number of Reported Cases of COVID-19: Top 50 Countries", 
+       subtitle = paste("Data as of", format(max(cov_curve$date), "%A, %B %e, %Y")), 
+        caption = "Kieran Healy @kjhealy / Data: https://www.ecdc.europa.eu/") + 
+  theme(plot.title = element_text(size = rel(1), face = "bold"),
+          plot.subtitle = element_text(size = rel(0.7)),
+          plot.caption = element_text(size = rel(1)),
+          # turn off the strip label and tighten the panel spacing
+          strip.text = element_blank(),
+          panel.spacing.x = unit(-0.05, "lines"),
+          panel.spacing.y = unit(0.3, "lines"),
+          axis.text.y = element_text(size = rel(0.5)),
+          axis.title.x = element_text(size = rel(1)),
+          axis.title.y = element_text(size = rel(1)),
+          axis.text.x = element_text(size = rel(0.5)),
+          legend.text = element_text(size = rel(1)))
+
+cov_case_sm
 
 ```
 

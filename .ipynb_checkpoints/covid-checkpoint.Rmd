@@ -1,0 +1,633 @@
+---
+title: "COVID"
+author:
+- name: Kieran Healy
+  affiliation: Duke University
+  email: kjhealy@soc.duke.edu
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+crossrefYaml: "config/pandoc-crossref-settings.yaml"
+output:
+  html_document: distill::distill_article
+  pdf_document: 
+    md_extensions: +simple_tables+table_captions+yaml_metadata_block+smart
+    template: /Users/kjhealy/.pandoc/templates/rmd-latex.template
+    pandoc_args: [
+      "--bibliography", "/Users/kjhealy/Documents/bibs/socbib-pandoc.bib",
+      "--filter", "pandoc-crossref",
+      "--filter", "pandoc-citeproc",
+      "--csl", "/Users/kjhealy/.pandoc/csl/ajps.csl"
+      ]      
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, echo = TRUE}
+
+library(tidyverse)
+library(lubridate)
+library(here)
+library(janitor)
+library(socviz)
+library(ggrepel)
+library(paletteer)
+
+## --------------------------------------------------------------------
+## Custom font and theme, omit if you don't have the myriad library
+## (https://github.com/kjhealy/myriad) and associated Adobe fonts.
+## --------------------------------------------------------------------
+library(showtext)
+showtext_auto()
+library(myriad)
+import_myriad_semi()
+
+theme_covid <- function() { 
+    theme_myriad_semi() +
+    theme(plot.title = element_text(size = rel(2), face = "bold"),
+          plot.subtitle = element_text(size = rel(1.5)),
+          plot.caption = element_text(size = rel(0.9)),
+          axis.text.y = element_text(size = rel(2)),
+          axis.title.x = element_text(size = rel(1.5)),
+          axis.title.y = element_text(size = rel(1.5)),
+          axis.text.x = element_text(size = rel(2)),
+          legend.text = element_text(size = rel(2))
+          )
+}
+
+
+theme_set(theme_covid())
+
+### --------------------------------------------------------------------
+
+
+## cb-friendly palette
+col_pal <- c("#E69F00", "#0072B2", "#000000", "#56B4E9", 
+             "#009E73", "#F0E442", "#D55E00", "#CC79A7")
+
+```
+
+```{r functions}
+
+## Download today's CSV file, saving it to data/ and also read it in
+get_ecdc_csv <- function(url = "https://opendata.ecdc.europa.eu/covid19/casedistribution/csv",
+                          date = lubridate::today(), 
+                          writedate = lubridate::today(), 
+                          fname = "ecdc-cumulative-",
+                          ext = "csv", 
+                          dest = "data") {
+  
+  target <- url
+  message("target: ", target)
+
+  destination <- fs::path(here::here("data"), paste0(fname, writedate), ext = ext)
+  message("saving to: ", destination)
+  
+  tf <- tempfile(fileext = ext)
+  curl::curl_download(target, tf)
+  fs::file_copy(tf, destination)
+  
+  janitor::clean_names(readr::read_csv(tf))
+}                          
+
+
+## Get Daily COVID Tracking Project Data
+## form is https://covidtracking.com/api/us/daily.csv
+
+get_uscovid_data <- function(url = "https://covidtracking.com/api/",
+                          unit = c("states", "us"),
+                          fname = "-", 
+                          date = lubridate::today(), 
+                          ext = "csv", 
+                          dest = "data/us_covid") {
+  unit <- match.arg(unit)
+  target <-  paste0(url, unit, "/", "daily.", ext)
+  message("target: ", target)
+
+  destination <- fs::path(here::here("data/covid_us"), 
+                          paste0(unit, "_daily_", date), ext = ext)
+  message("saving to: ", destination)
+  
+  tf <- tempfile(fileext = ext)
+  curl::curl_download(target, tf)
+  fs::file_copy(tf, destination)
+  
+  janitor::clean_names(read_csv(tf))
+}                          
+
+## Which n states are leading the count of positive cases or deaths?
+top_n_states <- function(data, n = 5, measure = c("positive", "death")) {
+  meas <- match.arg(measure)
+  data %>%
+  group_by(state) %>%
+  filter(measure == meas, date == max(date)) %>%
+  drop_na() %>%
+  ungroup() %>%
+  top_n(n, wt = count) %>%
+  pull(state)
+}
+
+
+## A useful function from Edward Visel, which does a thing
+## with tibbles that in the past I've done variable-by-variable
+## using match(), like an animal. The hardest part was 
+## figuring out that this operation is called a coalescing join  
+## https://alistaire.rbind.io/blog/coalescing-joins/
+coalesce_join <- function(x, y, 
+                          by = NULL, suffix = c(".x", ".y"), 
+                          join = dplyr::full_join, ...) {
+    joined <- join(x, y, by = by, suffix = suffix, ...)
+    # names of desired output
+    cols <- dplyr::union(names(x), names(y))
+    
+    to_coalesce <- names(joined)[!names(joined) %in% cols]
+    suffix_used <- suffix[ifelse(endsWith(to_coalesce, suffix[1]), 1, 2)]
+    # remove suffixes and deduplicate
+    to_coalesce <- unique(substr(
+        to_coalesce, 
+        1, 
+        nchar(to_coalesce) - nchar(suffix_used)
+    ))
+    
+    coalesced <- purrr::map_dfc(to_coalesce, ~dplyr::coalesce(
+        joined[[paste0(.x, suffix[1])]], 
+        joined[[paste0(.x, suffix[2])]]
+    ))
+    names(coalesced) <- to_coalesce
+    
+    dplyr::bind_cols(joined, coalesced)[cols]
+}
+
+
+
+```
+
+
+```{r iso-country-codes}
+## Country codes. The ECDC does not quite use standard codes for countries
+## These are the iso2 and iso3 codes, plus some convenient groupings for
+## possible use later
+iso3_cnames <- read_csv("data/countries_iso3.csv")
+iso2_to_iso3 <- read_csv("data/iso2_to_iso3.csv")
+
+cname_table <- left_join(iso3_cnames, iso2_to_iso3)
+
+cname_table
+
+eu <- c("AUT", "BEL", "BGR", "HRV", "CYP", "CZE", "DNK", "EST", "FIN", "FRA",
+        "DEU", "GRC", "HUN", "IRL", "ITA", "LVA", "LTU", "LUX", "MLT", "NLD",
+        "POL", "PRT", "ROU", "SVK", "SVN", "ESP", "SWE", "GBR")
+
+europe <- c("ALB", "AND", "AUT", "BLR", "BEL", "BIH", "BGR", "HRV", "CYP", "CZE",
+        "DNK", "EST", "FRO", "FIN", "FRA", "DEU", "GIB", "GRC", "HUN", "ISL",
+        "IRL", "ITA", "LVA", "LIE", "LTU", "LUX", "MKD", "MLT", "MDA", "MCO",
+        "NLD", "NOR", "POL", "PRT", "ROU", "RUS", "SMR", "SRB", "SVK", "SVN",
+        "ESP", "SWE", "CHE", "UKR", "GBR", "VAT", "RSB", "IMN", "MNE")
+
+north_america <- c("AIA", "ATG", "ABW", "BHS", "BRB", "BLZ", "BMU", "VGB", "CAN", "CYM",
+        "CRI", "CUB", "CUW", "DMA", "DOM", "SLV", "GRL", "GRD", "GLP", "GTM",
+        "HTI", "HND", "JAM", "MTQ", "MEX", "SPM", "MSR", "ANT", "KNA", "NIC",
+        "PAN", "PRI", "KNA", "LCA", "SPM", "VCT", "TTO", "TCA", "VIR", "USA",
+        "SXM")
+
+south_america <- c("ARG", "BOL", "BRA", "CHL", "COL", "ECU", "FLK", "GUF", "GUY", "PRY",
+                   "PER", "SUR", "URY", "VEN")
+
+
+africa <- c("DZA", "AGO", "SHN", "BEN", "BWA", "BFA", "BDI", "CMR", "CPV", "CAF",
+        "TCD", "COM", "COG", "DJI", "EGY", "GNQ", "ERI", "ETH", "GAB", "GMB",
+        "GHA", "GNB", "GIN", "CIV", "KEN", "LSO", "LBR", "LBY", "MDG", "MWI",
+        "MLI", "MRT", "MUS", "MYT", "MAR", "MOZ", "NAM", "NER", "NGA", "STP",
+        "REU", "RWA", "STP", "SEN", "SYC", "SLE", "SOM", "ZAF", "SHN", "SDN",
+        "SWZ", "TZA", "TGO", "TUN", "UGA", "COD", "ZMB", "TZA", "ZWE", "SSD",
+        "COD")
+
+asia <- c("AFG", "ARM", "AZE", "BHR", "BGD", "BTN", "BRN", "KHM", "CHN", "CXR",
+        "CCK", "IOT", "GEO", "HKG", "IND", "IDN", "IRN", "IRQ", "ISR", "JPN",
+        "JOR", "KAZ", "PRK", "KOR", "KWT", "KGZ", "LAO", "LBN", "MAC", "MYS",
+        "MDV", "MNG", "MMR", "NPL", "OMN", "PAK", "PHL", "QAT", "SAU", "SGP",
+        "LKA", "SYR", "TWN", "TJK", "THA", "TUR", "TKM", "ARE", "UZB", "VNM",
+        "YEM", "PSE")
+
+oceania <- c("ASM", "AUS", "NZL", "COK", "FJI", "PYF", "GUM", "KIR", "MNP", "MHL",
+        "FSM", "UMI", "NRU", "NCL", "NZL", "NIU", "NFK", "PLW", "PNG", "MNP",
+        "SLB", "TKL", "TON", "TUV", "VUT", "UMI", "WLF", "WSM", "TLS")
+
+```
+
+## European Centers for Disease Control Data
+
+```{r get-and-clean-data}
+## There's a typo in the file name. Note 'disbtribution' rather than 'distribution'
+## e.g. COVID-19-geographic-disbtribution-worldwide-2020-03-18.xls
+## I assume this'll get fixed or changed at some point. 
+## The good thing is that these data files are cumulative
+
+## on 3/25/20 they changed the file name to omit the date
+# covid_raw <- get_ecdc_data(url = "https://www.ecdc.europa.eu/sites/default/files/documents/",
+#                            fname = "COVID-19-geographic-disbtribution-worldwide-",
+#                            ext = "xlsx")
+
+## on 3/27/2020 they broadened the data formats and changed the URLS
+
+covid_raw <- get_ecdc_csv()
+
+covid_raw
+
+## on 3/27/20 they changed the contents of the file too, including the date format
+covid <- covid_raw %>%
+  mutate(date = lubridate::dmy(date_rep),
+         iso2 = geo_id)
+
+covid
+
+## merge in the iso country names
+covid <- left_join(covid, cname_table)
+
+covid
+
+## Looks like a missing data code
+## Also note that not everything in this dataset is a country
+covid %>% 
+  filter(cases == -9)
+
+
+## A few ECDC country codes are non-iso, notably the UK
+anti_join(covid, cname_table) %>%
+  select(geo_id, countries_and_territories, iso2, iso3, cname) %>%
+  distinct()
+
+## A small crosswalk file that we'll coalesce into the missing values
+## We need to specify the na explicity because the xwalk file has Namibia
+## as a country -- i.e. country code = string literal "NA"
+cname_xwalk <- read_csv("data/ecdc_to_iso2_xwalk.csv",
+                        na = "")
+
+cname_xwalk
+## How to do this manually
+# covid <- covid %>%
+#   left_join(cname_xwalk, by = "geo_id") %>% 
+#   mutate(iso3 = coalesce(iso3.x, iso3.y),
+#          cname = coalesce(cname.x, cname.y)) %>% 
+#   select(-iso3.x, -iso3.y, cname.x, cname.y)
+
+## But nicer to use the function from Edward Visel
+covid <- coalesce_join(covid, cname_xwalk, 
+                       by = "geo_id", join = dplyr::left_join)
+
+
+## Take a look again
+anti_join(covid, cname_table) %>%
+  select(geo_id, countries_and_territories, iso2, iso3, cname) %>%
+  distinct()
+
+```
+
+```{r plots}
+
+## cumulative cases for selected countries
+cu_out <- covid %>%
+  filter(iso3 %in% c("ITA", "CHN", "GBR", "FRA", 
+                     "USA", "KOR")) %>%
+  group_by(cname) %>%
+  arrange(date) %>%
+  mutate(cases_na = na_if(cases, 0), 
+         deaths_na = na_if(deaths,0),
+         cu_cases = cumsum(cases),
+         cu_deaths = cumsum(deaths)) %>%
+  select(date, cname, cu_cases, cu_deaths) %>%
+  pivot_longer(cu_cases:cu_deaths, 
+               names_to = "measure", values_to = "count") %>%
+  mutate(measure = recode(measure, `cu_cases` = "Cases", 
+                         `cu_deaths` = "Deaths")) %>%
+  mutate(count = na_if(count, 0))
+
+cu_out %>% 
+  arrange(desc(date))
+
+cu_out %>% 
+  ggplot(mapping = aes(x = date, y = count, 
+                       color = measure)) + 
+  geom_line(size = 1.5) + 
+  scale_color_manual(values = col_pal) + 
+#  scale_y_continuous(labels = scales::comma_format(accuracy = 1)) + 
+  scale_y_continuous(trans = "log2",
+                     labels = scales::comma_format(accuracy = 1),
+                     breaks = 2^c(seq(1, 17, 2))) +
+  # scale_y_continuous(trans = "log10",
+  #                    labels = scales::comma_format(accuracy = 1)) +
+  labs(title = paste0("COVID-19 Cumulative Recorded Cases and Deaths to ", 
+                      max(cu_out$date)), 
+       x = "Date", y = "Cumulative Reported Events (log 2 scale)", color = "Measure") +
+  facet_wrap(~ reorder(cname, -count, na.rm = TRUE)) + 
+  theme(legend.position = "top")
+
+## Just deaths
+cu_out %>% 
+  filter(measure == "Deaths") %>% 
+  ggplot(mapping = aes(x = date, y = count)) + 
+  geom_line(size = 1.5) + 
+#  scale_y_continuous(labels = scales::comma_format(accuracy = 1)) + 
+  scale_y_continuous(trans = "log2",
+                     labels = scales::comma_format(accuracy = 1),
+                     breaks = 2^c(seq(1, 17, 2))) +
+  # scale_y_continuous(trans = "log10",
+  #                    labels = scales::comma_format(accuracy = 1)) +
+  labs(title = paste0("COVID-19 Cumulative Recorded Deaths to ", 
+                      max(cu_out$date)), 
+       x = "Date", y = "Cumulative Reported Events (log 2 scale)") +
+  facet_wrap(~ reorder(cname, -count, na.rm = TRUE)) + 
+  theme(legend.position = "top")
+
+  
+```
+
+```{r, layout="l-body-outset", fig.width=10, fig.height=8}
+## The graph everyone draws
+cov_curve <- covid %>%
+  select(date, cname, iso3, cases, deaths) %>%
+  drop_na(iso3) %>%
+  group_by(iso3) %>%
+  arrange(date) %>%
+  mutate(cu_cases = cumsum(cases), 
+         cu_deaths = cumsum(deaths)) %>%
+  filter(cu_deaths > 9) %>%
+  mutate(days_elapsed = date - min(date),
+          end_label = ifelse(date == max(date), cname, NA),
+          end_label = recode(end_label, `United States` = "USA",
+                        `Iran, Islamic Republic of` = "Iran", 
+                        `Korea, Republic of` = "South Korea", 
+                        `United Kingdom` = "UK"),
+         cname = recode(cname, `United States` = "USA",
+                        `Iran, Islamic Republic of` = "Iran", 
+                        `Korea, Republic of` = "South Korea", 
+                        `United Kingdom` = "UK"))
+
+cov_curve
+
+focus_cn <- c("CHN", "DEU", "GBR", "USA", "IRN", "JPN",
+              "KOR", "ITA", "FRA", "ESP", "CHE")
+
+## Colors
+cgroup_cols <- c(prismatic::clr_darken(paletteer_d("ggsci::category20_d3"), 0.2)[1:length(focus_cn)], "gray70")
+
+
+cov_curve %>%
+  mutate(end_label = case_when(iso3 %in% focus_cn ~ end_label,
+                               TRUE ~ NA_character_), 
+         cgroup = case_when(iso3 %in% focus_cn ~ iso3, 
+                            TRUE ~ "ZZOTHER")) %>%
+  ggplot(mapping = aes(x = days_elapsed, y = cu_deaths, 
+         color = cgroup, label = end_label, 
+         group = cname)) + 
+  geom_line(size = 0.8) + 
+  geom_text_repel(nudge_x = 1.1,
+                  nudge_y = 0.1, 
+                  segment.color = NA) + 
+  guides(color = FALSE) + 
+  scale_color_manual(values = cgroup_cols) +
+  scale_y_continuous(labels = scales::comma_format(accuracy = 1), 
+                     breaks = 2^seq(4, 13),
+                     trans = "log2") + 
+  labs(x = "Days Since 10th Confirmed Death", 
+       y = "Cumulative Number of Deaths (log2 scale)", 
+       title = "Cumulative Number of Reported Deaths from COVID-19, Selected Countries", 
+       subtitle = paste("Data as of", format(max(cov_curve$date), "%A, %B %e, %Y")), 
+        caption = "Kieran Healy @kjhealy / Data: https://www.ecdc.europa.eu/") 
+```
+
+```{r table}
+cov_curve %>%
+  group_by(iso3) %>%
+  filter(cu_deaths == max(cu_deaths)) %>%
+  arrange(desc(cu_deaths)) %>%
+  select(cname, cu_cases, cu_deaths, days_elapsed)
+
+```
+
+```{r, layout="l-body-outset", fig.width=10, fig.height=8}
+
+cov_case_curve <- covid %>%
+  select(date, cname, iso3, cases, deaths) %>%
+  drop_na(iso3) %>%
+  group_by(iso3) %>%
+  arrange(date) %>%
+  mutate(cu_cases = cumsum(cases), 
+         cu_deaths = cumsum(deaths)) %>%
+  filter(cu_cases > 99) %>%
+  mutate(days_elapsed = date - min(date),
+          end_label = ifelse(date == max(date), cname, NA),
+          end_label = recode(end_label, `United States` = "USA",
+                        `Iran, Islamic Republic of` = "Iran", 
+                        `Korea, Republic of` = "South Korea", 
+                        `United Kingdom` = "UK"),
+         cname = recode(cname, `United States` = "USA",
+                        `Iran, Islamic Republic of` = "Iran", 
+                        `Korea, Republic of` = "South Korea", 
+                        `United Kingdom` = "UK"))
+
+
+cov_case_curve %>%
+  mutate(end_label = case_when(iso3 %in% focus_cn ~ end_label,
+                               TRUE ~ NA_character_), 
+         cgroup = case_when(iso3 %in% focus_cn ~ iso3, 
+                            TRUE ~ "ZZOTHER")) %>%
+  ggplot(mapping = aes(x = days_elapsed, y = cu_cases, 
+         color = cgroup, label = end_label, 
+         group = cname)) + 
+  geom_line(size = 0.8) + 
+  geom_text_repel(nudge_x = 0.5,
+                  nudge_y = -0.1, 
+                  segment.color = NA) + 
+  guides(color = FALSE) + 
+  scale_color_manual(values = cgroup_cols) +
+  scale_y_continuous(labels = scales::comma_format(accuracy = 1), 
+                     breaks = 2^seq(4, 16, 1),
+                     trans = "log2") + 
+  labs(x = "Days Since 100th Confirmed Case", 
+       y = "Cumulative Number of Reported Cases (log2 scale)", 
+       title = "Cumulative Reported Cases of COVID-19, Selected Countries", 
+       subtitle = paste("ECDC data as of", format(max(cov_curve$date), "%A, %B %e, %Y")), 
+       caption = "Kieran Healy @kjhealy / Data: https://www.ecdc.europa.eu/") 
+
+```
+
+
+```{r like-jbm, layout="l-body-outset", fig.width=10, fig.height=12}
+## Replicate JB Murdoch's small multiple, only don't alphabetize countries. 
+## https://www.ft.com/coronavirus-latest
+
+## Top 50 countries by >> 100 cases, let's say. 
+top_50 <- cov_case_curve %>%
+  group_by(cname) %>%
+  filter(cu_cases == max(cu_cases)) %>%
+  ungroup() %>%
+  top_n(50, cu_cases) %>%
+  select(iso3, cname, cu_cases) %>%
+  mutate(days_elapsed = 1, 
+             cu_cases = max(cov_case_curve$cu_cases) - 1e4) 
+
+top_50
+
+cov_case_curve_bg <- cov_case_curve %>% 
+  select(-cname) %>%
+  filter(iso3 %in% top_50$iso3) 
+
+cov_case_curve_endpoints <- cov_case_curve %>% 
+  filter(iso3 %in% top_50$iso3) %>%
+  group_by(iso3) %>%
+  filter(cu_cases == max(cu_cases)) %>%
+  select(cname, iso3, days_elapsed, cu_cases) %>%
+  ungroup()
+
+
+cov_case_sm <- cov_case_curve  %>%
+  filter(iso3 %in% top_50$iso3) %>%
+  ggplot(mapping = aes(x = days_elapsed, y = cu_cases)) + 
+  geom_line(data = cov_case_curve_bg, 
+            aes(group = iso3),
+            size = 0.15, color = "gray80") + 
+  geom_line(color = "firebrick",
+            lineend = "round") + 
+  geom_point(data = cov_case_curve_endpoints, 
+             size = 1.1, 
+             shape = 21, 
+             color = "firebrick",
+             fill = "firebrick2"
+             ) + 
+  geom_text(data = top_50, 
+             mapping = aes(label = cname), 
+             vjust = "inward", 
+             hjust = "inward",
+             fontface = "bold", 
+             color = "firebrick", 
+             size = 2.1) + 
+  scale_y_log10(labels = scales::label_number_si()) + 
+  facet_wrap(~ reorder(cname, -cu_cases), ncol = 5) + 
+  labs(x = "Days Since 100th Confirmed Case", 
+       y = "Cumulative Number of Cases (log10 scale)", 
+       title = "Cumulative Number of Reported Cases of COVID-19: Top 50 Countries", 
+       subtitle = paste("Data as of", format(max(cov_curve$date), "%A, %B %e, %Y")), 
+        caption = "Kieran Healy @kjhealy / Data: https://www.ecdc.europa.eu/") + 
+  theme(plot.title = element_text(size = rel(1), face = "bold"),
+          plot.subtitle = element_text(size = rel(0.7)),
+          plot.caption = element_text(size = rel(1)),
+          strip.text = element_blank(),
+          panel.spacing.x = unit(-0.05, "lines"),
+          panel.spacing.y = unit(0.3, "lines"),
+          axis.text.y = element_text(size = rel(0.5)),
+          axis.title.x = element_text(size = rel(1)),
+          axis.title.y = element_text(size = rel(1)),
+          axis.text.x = element_text(size = rel(0.5)),
+          legend.text = element_text(size = rel(1)))
+
+
+ggsave("figures/cov_case_sm.pdf", 
+       cov_case_sm, width = 10, height = 12)
+
+ggsave("figures/cov_case_sm.png", 
+       cov_case_sm, width = 10, height = 12, dpi = 300)
+
+
+```
+
+
+## US State-Level Data from [https://covidtracking.com]
+
+```{r, layout="l-body-outset", fig.width=5, fig.height=4}
+
+us_states_raw <- get_uscovid_data()
+## us_states_raw <- read_csv("data/covid_us/states_daily_2020-03-28.csv")
+
+
+us_states <- us_states_raw %>%
+  mutate(date = lubridate::ymd(date)) %>%
+  pivot_longer(positive:death, names_to = "measure", values_to = "count")
+
+max(us_states$date)
+
+us_states %>%
+  filter(measure == "positive", date == max(date)) %>%
+  drop_na() %>%
+  ungroup() %>%
+  arrange(desc(count))
+
+us_states %>%
+  group_by(state) %>%
+  filter(measure == "positive", date == max(date)) %>%
+  drop_na() %>%
+  ungroup() %>%
+  arrange(desc(count)) %>%
+  top_n(10, count) %>%
+   ggplot(aes(x = count, y = reorder(state, count))) + 
+  geom_point(size = 3) + 
+  scale_x_continuous(trans = "log2", 
+                     breaks = 2^c(seq(1, 17, 1)),
+                     labels = scales::comma_format(accuracy = 1)) + 
+  labs(title = "Total Recorded Cases to Date",
+       subtitle = paste("Top 10 States. Data as of", format(max(us_states$date), "%A, %B %e, %Y")),
+       caption = "Data: COVID Tracking Project, http://covidtracking.com | Graph: @kjhealy",
+       y = NULL, 
+       x = "Count (log2 scale)") 
+```
+
+```{r, layout="l-body-outset", fig.width=10, fig.height=8}
+
+state_cols <- c("gray70", 
+                prismatic::clr_darken(paletteer_d("ggsci::category20_d3"), 0.2))
+
+us_states %>%
+  group_by(state) %>%
+  mutate(core = case_when(state %nin% top_n_states(us_states) ~ "",
+                          TRUE ~ state),
+         end_label = ifelse(date == max(date), core, NA)) %>%
+  arrange(date) %>%
+  filter(measure == "positive", date > "2020-03-09") %>%
+  ggplot(aes(x = date, y = count, group = state, color = core, label = end_label)) + 
+  geom_line(size = 0.5) + 
+  geom_text_repel(segment.color = NA, nudge_x = 0.2, nudge_y = 0.1) + 
+  scale_color_manual(values = state_cols) + 
+  scale_x_date(date_breaks = "3 days", date_labels = "%b %e" ) + 
+  scale_y_continuous(trans = "log2",
+                     labels = scales::comma_format(accuracy = 1),
+                     breaks = 2^c(seq(1, 17, 1))) +
+  guides(color = FALSE) + 
+  coord_equal() + 
+  labs(title = "COVID-19 Cumulative Recorded Cases by US State",
+       subtitle = paste("Data as of", format(max(us_states$date), "%A, %B %e, %Y")),
+       x = "Date", y = "Count of Cases (log 2 scale)", 
+       caption = "Data: COVID Tracking Project, http://covidtracking.com | Graph: @kjhealy")
+
+us_states %>%
+  filter(measure == "death", date == max(date)) %>%
+  drop_na() %>%
+  ungroup() %>%
+  arrange(desc(count))
+
+us_states %>%
+  group_by(state) %>%
+    mutate(core = case_when(state %nin% top_n_states(us_states, measure = "death") ~ "",
+                          TRUE ~ state),
+           end_label = ifelse(date == max(date), core, NA)) %>%
+  arrange(date) %>%
+  filter(measure == "death", date > "2020-03-09") %>%
+  ggplot(aes(x = date, y = count, group = state, color = core, label = end_label)) + 
+  geom_line(size = 0.5) + 
+  geom_text_repel(segment.color = NA, nudge_x = 0.2, nudge_y = 0.1) + 
+  scale_color_manual(values = state_cols) + 
+  scale_x_date(date_breaks = "3 days", date_labels = "%b %e" ) + 
+  scale_y_continuous(trans = "log2",
+                     labels = scales::comma_format(accuracy = 1),
+                     breaks = 2^c(seq(1, 17, 1))) +
+  guides(color = FALSE) + 
+  coord_equal() + 
+  labs(title = "COVID-19 Cumulative Recorded Deaths by US State",
+       subtitle = paste("Data as of", format(max(us_states$date), "%A, %B %e, %Y")),
+       x = "Date", y = "Count of Deaths (log 2 scale)", 
+       caption = "Data: COVID Tracking Project, http://covidtracking.com | Graph: @kjhealy")
+
+
+```
+
+
+
