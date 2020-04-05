@@ -35,6 +35,12 @@ I've always admired this style of viususalistion. It preserves the variation of 
 
 I saved myself the effort of recreating the dataset from scratch by using Kieran's R code found in his [COVID Github Repository](https://github.com/kjhealy/covid). The COVID data comes from the European Centre for Disease Prevention and Control (ECDC). Note that I have not checked the validity or accuracy of the data source or scraping process. This is just an exercise in creating a similar figure in Python.
 
+## Processing the data
+
+Most of the data preprocessing has been completed in the R script. However, there is still a bit of work requierd to get the necessary datasets and objects prepared for plotting. 
+
+First, load in the data, libraries and clean up some of the country labels.
+
 ```{python eval=FALSE}
 import pandas as pd
 import numpy as np
@@ -55,9 +61,6 @@ data = pd.read_csv('covid/bw/data/cov_case_curve1.csv')\
                    'Korea, Republic of' : 'South Korea', 
                    'United Kingdom' : 'UK'}})\
         .drop('Unnamed: 0', axis=1)
-
-# Create log cu_cases
-data['log_cases'] = np.log10(data['cu_cases'])
 
 # Show first 5 rows of the main dataset
 data.head()
@@ -90,7 +93,7 @@ library(kableExtra)
 head(py$data)
 ```
 
-Next, we subset our data so it contains the top 50 cumulative cases as of April 4th (df_50) and pivot them into a 'wide' format. The index of the dataframes will be the days_elapsed variable (x-axis) and the columns will be the countries we will want to plot (y-axis). ELements of the dataframe will contain the corresponding log cases.
+Next, we subset our data so it contains the top 50 cumulative cases as of April 4th (df_50) and pivot them into a 'wide' format. The index of the dataframes will be the days_elapsed variable (x-axis) and the columns will be the countries we will want to plot (y-axis). Elements of the dataframe will contain the corresponding log cases.
 
 ```{python eval=FALSE}
 ## Countries - top 50 cumulative cases as of 2020-03-27
@@ -112,7 +115,6 @@ df_50 = _df.pivot(index = 'days_elapsed',
 		  .reset_index(inplace=False)
 
 # Days elapsed as index (x axis)
-#df.index = df['days_elapsed']
 df_50.index = df_50['days_elapsed']
 
 # Drop unwanted columns
@@ -164,12 +166,10 @@ head(py$df_50)
 ## Plotting single country
 I started by plotting a single country before adding the other components of the final chart. Starting simple helped me get the basics right first. The below chart the cumulative growth of log cases in China by days since the 100th case.
 
-You can plot this using matplotlib or the plot function of the pandas dataframe (commented out). All the customisation uses the matplotlib.pyplot API. The difference between using matplotlib and pandas.plot is minor in a simple plot. However, it is much easier to start off with pandas.plot then to add customisation via matplotlib when it comes to more complicated visuliastions (thanks to [Chris Moffitt's blog post](https://pbpython.com/effective-matplotlib.html) on effective plotting in Python for this advice - it a life saver when doing the subplot/facet plot below).
+You can plot this using matplotlib or the plot function of the pandas dataframe (commented out). All the customisation uses the matplotlib.pyplot API. The difference between using matplotlib and pandas.plot is minor in a simple plot. However, it is much easier to start off with pandas.plot then to add customisation via matplotlib when it comes to more complicated visuliastions (thanks to [Chris Moffitt's blog post](https://pbpython.com/effective-matplotlib.html) on effective plotting in Python for this advice - it helped me heaps with the subplot/facet plots below).
 
 ```{python eval=FALSE}
 ## Plot China
-%matplotlib inline
-
 fig, ax = plt.subplots(figsize = (8, 13))
 
 # Matplotlib
@@ -348,9 +348,12 @@ markers = data.loc[data.groupby(["cname"])["cu_cases"].idxmax()]\
 			 .sort_values('cu_cases', ascending = False)\
 			 .head(50)\
 			 .loc[:, ['days_elapsed', 'cname', 'cu_cases']]
-
-markers.head()
 ```
+
+```{r echo=FALSE}
+head(py$markers)
+```
+
 
 ```{python eval=FALSE}
 fig, axes = plt.subplots(10, 5, figsize = (16, 30), sharex = True, sharey = True)
