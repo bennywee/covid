@@ -31,7 +31,7 @@ Learning matplotlib is difficult. The first thing which took me a while to wrap 
 
 I came across [Kieran Healy's blog post](https://twitter.com/kjhealy/status/1243561750756196353) a couple of weeks ago where he plotted cumulative reported cases of the COVID-19 virus for the top 50 countries. I thought it would be a good exercise for me to try to replicate this in Matplotlib.
 
-I've always admired this style of viususalistion. It preserves the variation of all the countries while highlighting the key country you want to focus on for comparison and trend analysis. I use similar plots at work all the time to assist in presentations - a clean and compact way of presenting rich datasets.
+I've always admired this style of visualisation It preserves the variation of all the countries while highlighting the key country you want to focus on for comparison and trend analysis. I use similar plots at work all the time to assist in presentations - a clean and compact way of presenting rich datasets.
 
 I saved myself the effort of recreating the dataset from scratch by using Kieran's R code found in his [COVID Github Repository](https://github.com/kjhealy/covid). The COVID data comes from the European Centre for Disease Prevention and Control (ECDC). Note that I have not checked the validity or accuracy of the data source or scraping process. This is just an exercise in creating a similar figure in Python.
 
