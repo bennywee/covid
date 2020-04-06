@@ -168,7 +168,7 @@ head(py$df_50)
 ## Plotting single country
 I started by plotting a single country before adding the other components of the final chart. Starting simple helped me get the basics right first. The below chart the cumulative growth of cases in China by days since the 100th case.
 
-You can plot this using matplotlib or the plot function of the pandas dataframe. All the customisation uses matplotlib functions. The difference between using matplotlib and pandas.plot is minor in a simple plot. However, it is much easier to start off with pandas.plot then add customisation via matplotlib when it comes to more complicated visuliastions (thanks to [Chris Moffitt's blog post](https://pbpython.com/effective-matplotlib.html) on effective plotting in Python for this advice).
+You can plot this using matplotlib or the plot function of the pandas dataframe. All the customisation uses matplotlib functions. The difference between using matplotlib and pandas.plot is minor in a simple plot. However, it is much easier to start off with pandas.plot then add customisation via matplotlib when it comes to more complicated visualisations (thanks to [Chris Moffitt's blog post](https://pbpython.com/effective-matplotlib.html) on effective plotting in Python for this advice).
 
 ```{python eval=FALSE}
 ## Plot China
