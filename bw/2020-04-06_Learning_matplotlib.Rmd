@@ -37,7 +37,7 @@ I saved myself the effort of recreating the dataset from scratch by using Kieran
 
 ## Processing the data
 
-Most of the data preprocessing has been completed in the R script. However, there is still a bit of work requierd to get the necessary datasets and objects prepared for plotting.You can find the exact data and scripts I used [here](https://github.com/bennywee/covid/tree/master/bw)
+Most of the data preprocessing has been completed in the R script. However, there is still a bit of work requierd to get the necessary datasets and objects prepared for plotting. The exact data and scripts I used [here](https://github.com/bennywee/covid/tree/master/bw)
 
 First, load in the data, libraries and clean up some of the country labels.
 
